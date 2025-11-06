@@ -14,3 +14,4 @@ def attention(query, key, value, dropout=None):
     # 计算Q与K的内积并除以根号dk
     # transpose——相当于转置
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k) 
+    # 测试提交代码
