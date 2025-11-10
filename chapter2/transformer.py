@@ -37,3 +37,4 @@ class MultiHeadAttention(nn.modules):
         # 构造函数
         # args: 配置对象
         super().__init__()
+        # 
