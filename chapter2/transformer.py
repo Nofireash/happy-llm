@@ -69,3 +69,4 @@ class MultiHeadAttention(nn.modules):
 
         # 获取批次大小和序列长度,[batch_size, seq_len, dim]
         bsz, seqlen, _ = q.shape
+        # 
