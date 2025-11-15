@@ -64,3 +64,8 @@ class MultiHeadAttention(nn.modules):
             mask = torch.triu(mask, diagonal=1)
             # 注册为模型的缓冲区
             self.register_buffer("mask", mask)
+    
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+
+        # 获取批次大小和序列长度,[batch_size, seq_len, dim]
+        bsz, seqlen, _ = q.shape
