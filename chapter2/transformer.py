@@ -72,21 +72,24 @@ class MultiHeadAttention(nn.modules):
             assert hasattr(self, 'mask')
             # 这里截取到序列长度，因为有些序列可能比 max_seq_len 短
             socres = socres + self.mask[:, :, :seqlen, :seqlen]
-            # 做Dropout
-            scores = self.attn_dropout(scores)
-            # V * Score，维度为(B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-            output = torch.matmul(socres, xv)
 
-            # 恢复时间维度并合并头。
-            # 将多头的结果拼接起来, 先交换维度为 (B, T, n_head, dim // n_head)，再拼接成 (B, T, n_head * dim // n_head)
-            # contiguous 函数用于重新开辟一块新内存存储，因为Pytorch设置先transpose再view会报错，
-            # 因为view直接基于底层存储得到，然而transpose并不会改变底层存储，因此需要额外存储
-            output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+        # 计算 softmax，维度为 (B, nh, T, T)
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        # 做Dropout
+        scores = self.attn_dropout(scores)
+        # V * Score，维度为(B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        output = torch.matmul(socres, xv)
 
-            # 最终投影回残差流。
-            output = self.wo(output)
-            output = self.resid_dropout(output)
-            return output
+        # 恢复时间维度并合并头。
+        # 将多头的结果拼接起来, 先交换维度为 (B, T, n_head, dim // n_head)，再拼接成 (B, T, n_head * dim // n_head)
+        # contiguous 函数用于重新开辟一块新内存存储，因为Pytorch设置先transpose再view会报错，
+        # 因为view直接基于底层存储得到，然而transpose并不会改变底层存储，因此需要额外存储
+        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+
+        # 最终投影回残差流。
+        output = self.wo(output)
+        output = self.resid_dropout(output)
+        return output
         
 class MLP(nn.Module):
     '''前馈神经网络'''
@@ -140,4 +143,47 @@ class EncoderLayer(nn.Module):
         h = self.attention.forward(norm_x, norm_x, norm_x)
         # 经过前馈网络
         out = h + self.feed_forward.forward(self.fnn_norm(h))
+        return out
+
+
+class Encoder(nn.Module):
+    '''Encoder块'''
+    def __init__(self, args):
+        super(Encoder, self).__init__()
+        # 一个 Encoder 由 N 个 Encoder Layer 组成
+        self.layers = nn.Module([Encoder(args) for _ in range(args.n_layers)])
+        self.norm = LayerNorm(args.n_embed)
+
+    def forward(self, x):
+        '''分别通过 N 层 Encoder Layer'''
+        for layer in self.layers:
+            x = layer(x)
+        return self.norm(x)
+    
+class DecoderLayer(nn.Module):
+    '''解码层'''
+    def __init__(self, args):
+        super().__init__()
+        # 一个 Layer 中有三个 LayerNorm，分别在 Mask Attention 之前、Self Attention 之前和 MLP 之前
+        self.attention_norm_1 = LayerNorm(args.n_embd)
+        # Decoder 的第一个部分是 Mask Attention，传入 is_causal=True
+        self.mask_attention = MultiHeadAttention(args, is_caual=True)
+        self.attention_norm_2 = LayerNorm(args.n_embd)
+        # Decoder 的第二部分是类似于Encoder的Attention，传入 is_causal=False
+        self.attention = MultiHeadAttention(args, is_causal=False)
+        self.ffn_norm = LayerNorm(args.n_embd)
+        # 第三个部分是 MLP
+        self.feed_forward = MLP(args.dim, args.dim, args.dropout)
+
+
+    def forward(self, x, enc_out):
+        # Layer Norm
+        norm_x = self.attention_norm_1(x)
+        # 掩码自注意力
+        x = x + self.mask_attention.forward(norm_x, norm_x, norm_x)
+        # 多头注意力
+        norm_x = self.attention_norm_2(x)
+        h = x + self.attention.forward(norm_x, enc_out, enc_out)
+        # 经过前馈神经网络
+        out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
