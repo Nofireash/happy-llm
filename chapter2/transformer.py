@@ -298,4 +298,27 @@ class Transformer(nn.Module):
         
         return logits, loss
     
-    
+
+def main():
+    args = ModelArgs(100, 10, 100, 0.1, 512, 1000, 1000, 2)
+    text = "我喜欢快乐地学习大模型"
+    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
+    inputs_token = tokenizer(
+        text,
+        return_tensors='pt',
+        max_length=args.max_seq_len,
+        truncation=True,
+        padding='max_length'
+    )
+    args.vocab_size = tokenizer.vocab_size
+    transformer = Transformer(args)
+    inputs_id = inputs_token['input_ids']
+    logits, loss = transformer.forward(inputs_id)
+    print(logits)
+    predicted_ids = torch.argmax(logits, dim=-1).item()
+    output = tokenizer.decode(predicted_ids)
+    print(output)
+
+if __name__ == "__main__":
+    print("开始")
+    main()
