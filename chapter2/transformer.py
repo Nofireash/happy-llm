@@ -144,9 +144,9 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x):
         # Layer Norm
-        norm_x = self.attention_norm(x)
+        x = self.attention_norm(x)
         # 自注意力
-        h = norm_x + self.attention.forward(norm_x, norm_x, norm_x)
+        h =  x + self.attention.forward(x, x, x)
         # 经过前馈网络
         out = h + self.feed_forward.forward(self.fnn_norm(h))
         return out
@@ -184,12 +184,12 @@ class DecoderLayer(nn.Module):
 
     def forward(self, x, enc_out):
         # Layer Norm
-        norm_x = self.attention_norm_1(x)
+        x = self.attention_norm_1(x)
         # 掩码自注意力
-        x = x + self.mask_attention.forward(norm_x, norm_x, norm_x)
+        x = x + self.mask_attention.forward(x, x, x)
         # 多头注意力
-        norm_x = self.attention_norm_2(x)
-        h = x + self.attention.forward(norm_x, enc_out, enc_out)
+        x = self.attention_norm_2(x)
+        h = x + self.attention.forward(x, enc_out, enc_out)
         # 经过前馈神经网络
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
@@ -292,12 +292,12 @@ class Transformer(nn.Module):
         print("tok_emb", tok_emb.size())
         # 然后通过位置编码
         pos_emb = self.transformer.wpe(tok_emb)
-        print("pos_emb", tok_emb.size())
         # 再进行 Dropout
         x = self.transformer.drop(pos_emb)
         # 然后通过 Encoder
         print("x after wpe:", x.size())
         enc_out = self.transformer.encoder(x)
+        print("x after enc_out:", x.size())
         # 然后通过 Decoder
         x = self.transformer.decoder(x, enc_out)
         print("x after decoder:", x.size())
