@@ -9,12 +9,18 @@ import torch.nn.functional as F
 class ModelArgs:
     n_embd: int # 嵌入维度
     n_heads: int # 头数
+    dim: int # 模型维度
+    dropout: float
+    max_seq_len: int
+    vocab_size: int
+    block_size: int
+    n_layer: int
     
 
 '''多头自注意力计算模块'''
-class MultiHeadAttention(nn.modules):
+class MultiHeadAttention(nn.Module):
 
-    def init(self, args: ModelArgs, is_causal=False):
+    def __init__(self, args: ModelArgs, is_causal=False):
         # 构造函数
         # args: 配置对象
         super().__init__()
@@ -50,7 +56,7 @@ class MultiHeadAttention(nn.modules):
 
         # 获取批次大小和序列长度,[batch_size, seq_len, dim]
         bsz, seqlen, _ = q.shape
-        # 计算查询（Q）、键（K）、值（V）,输入通过参数矩阵层，维度为 (B, T, n_embed) x (n_embed, dim) -> (B, T, dim)
+        # 计算查询（Q）、键（K）、值（V）,输入通过参数矩阵层，维度为 (B, T, n_embd) x (n_embd, dim) -> (B, T, dim)
         xq, xk, xv = self.wq(q), self.wk(k), self.wv(v)
         
         # 将 Q、K、V 拆分成多头，维度为 (B, T, n_head, dim // n_head)，然后交换维度，变成 (B, n_head, T, dim // n_head)
@@ -60,25 +66,25 @@ class MultiHeadAttention(nn.modules):
         xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xq.transpose(1, 2)
-        xk.transpose(1, 2)
-        xv.transpose(1, 2)
+        xq = xq.transpose(1, 2)
+        xk = xk.transpose(1, 2)
+        xv = xv.transpose(1, 2)
 
         # 注意力计算
         # 计算 QK^T / sqrt(d_k)，维度为 (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        scores = torch.matmul(xq, xk.transpose(2.3)) / math.sqrt(self.head_dim)
+        scores = torch.matmul(xq, xk.transpose(2,3)) / math.sqrt(self.head_dim)
         # 掩码自注意力必须有注意力掩码
         if self.is_causal:
             assert hasattr(self, 'mask')
             # 这里截取到序列长度，因为有些序列可能比 max_seq_len 短
-            socres = socres + self.mask[:, :, :seqlen, :seqlen]
+            scores = scores + self.mask[:, :, :seqlen, :seqlen]
 
         # 计算 softmax，维度为 (B, nh, T, T)
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         # 做Dropout
         scores = self.attn_dropout(scores)
         # V * Score，维度为(B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        output = torch.matmul(socres, xv)
+        output = torch.matmul(scores, xv)
 
         # 恢复时间维度并合并头。
         # 将多头的结果拼接起来, 先交换维度为 (B, T, n_head, dim // n_head)，再拼接成 (B, T, n_head * dim // n_head)
@@ -98,7 +104,7 @@ class MLP(nn.Module):
         # 定义第一层线性变换，从输入维度到隐藏维度
         self.w1 = nn.Linear(dim, hidden_dim)
         # 定义第二层线性变换，从隐藏维度到输入维度
-        self.ww2 = nn.Linear(hidden_dim,dim)
+        self.w2 = nn.Linear(hidden_dim,dim)
         # 定义dropout层，用于防止过拟合
         self.dropout = nn.Dropout(dropout)
 
@@ -130,17 +136,17 @@ class EncoderLayer(nn.Module):
     def __init__(self, args):
         super().__init__()
         # 一个 Layer 中有两个 LayerNorm，分别在 Attention 之前和 MLP 之前
-        self.attention_norm = LayerNorm(args.n_embed)
+        self.attention_norm = LayerNorm(args.n_embd)
         # Encoder 不需要掩码，传入 is_causal=False
         self.attention = MultiHeadAttention(args, is_causal=False)
-        self.fnn_norm = LayerNorm(args.n_embed)
+        self.fnn_norm = LayerNorm(args.n_embd)
         self.feed_forward = MLP(args.dim, args.dim, args.dropout)
 
     def forward(self, x):
         # Layer Norm
         norm_x = self.attention_norm(x)
         # 自注意力
-        h = self.attention.forward(norm_x, norm_x, norm_x)
+        h = norm_x + self.attention.forward(norm_x, norm_x, norm_x)
         # 经过前馈网络
         out = h + self.feed_forward.forward(self.fnn_norm(h))
         return out
@@ -151,8 +157,8 @@ class Encoder(nn.Module):
     def __init__(self, args):
         super(Encoder, self).__init__()
         # 一个 Encoder 由 N 个 Encoder Layer 组成
-        self.layers = nn.Module([Encoder(args) for _ in range(args.n_layers)])
-        self.norm = LayerNorm(args.n_embed)
+        self.layers = nn.ModuleList([EncoderLayer(args) for _ in range(args.n_layer)])
+        self.norm = LayerNorm(args.n_embd)
 
     def forward(self, x):
         '''分别通过 N 层 Encoder Layer'''
@@ -167,7 +173,7 @@ class DecoderLayer(nn.Module):
         # 一个 Layer 中有三个 LayerNorm，分别在 Mask Attention 之前、Self Attention 之前和 MLP 之前
         self.attention_norm_1 = LayerNorm(args.n_embd)
         # Decoder 的第一个部分是 Mask Attention，传入 is_causal=True
-        self.mask_attention = MultiHeadAttention(args, is_caual=True)
+        self.mask_attention = MultiHeadAttention(args, is_causal=True)
         self.attention_norm_2 = LayerNorm(args.n_embd)
         # Decoder 的第二部分是类似于Encoder的Attention，传入 is_causal=False
         self.attention = MultiHeadAttention(args, is_causal=False)
@@ -205,6 +211,7 @@ class Decoder(nn.Module):
 class PositionalEncoding(nn.Module):
     '''位置编码模块'''
     def __init__(self, args):
+        super(PositionalEncoding, self).__init__()
         # Dropout 层
         # self.dropout = nn.Dropout(p=args.dropout)
 
@@ -245,7 +252,7 @@ class Transformer(nn.Module):
         self.lm_head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
 
         # 初始化所有权重
-        self.apply(self.__init_weights)
+        self.apply(self._init_weights)
 
         # 查看所有参数的数量
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6))
@@ -259,6 +266,17 @@ class Transformer(nn.Module):
             no_params -= self.transformer.wte.weight.numel()
         return n_params
     
+    '''初始化权重'''
+    def _init_weights(self, module):
+        # 线性层和 Embedding 层初始化为正则分布
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+
     '''向前计算函数'''
     def forward(self, idx, targets=None):
         # 输入为 idx，维度为 (batch size, sequence length, 1)；targets 为目标序列，用于计算 loss
@@ -274,7 +292,7 @@ class Transformer(nn.Module):
         print("tok_emb", tok_emb.size())
         # 然后通过位置编码
         pos_emb = self.transformer.wpe(tok_emb)
-        print("tok_emb", tok_emb.size())
+        print("pos_emb", tok_emb.size())
         # 再进行 Dropout
         x = self.transformer.drop(pos_emb)
         # 然后通过 Encoder
@@ -300,7 +318,7 @@ class Transformer(nn.Module):
     
 
 def main():
-    args = ModelArgs(100, 10, 100, 0.1, 512, 1000, 1000, 2)
+    args = ModelArgs(512, 16, 512, 0.1, 512, 1000, 1000, 2)
     text = "我喜欢快乐地学习大模型"
     tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
     inputs_token = tokenizer(
